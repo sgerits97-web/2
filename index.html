@@ -138,17 +138,16 @@ select.f-input { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 #canvas-wrapper {
   flex: 1;
   position: relative;
-  overflow: hidden;
+  overflow: auto;
   background: #e8e8e8;
+  -webkit-overflow-scrolling: touch;
 }
 
 #canvas-main { 
   display: block; 
   background: white;
   touch-action: none;
-  position: absolute;
-  top: 0;
-  left: 0;
+  transform-origin: 0 0;
 }
 
 /* ── LOADING OVERLAY ── */
@@ -379,6 +378,9 @@ let drawingHistory = [];
 let historyStep = -1;
 let scale = 1;
 let lastX, lastY;
+let isPinching = false;
+let initialPinchDistance = 0;
+let initialScale = 1;
 
 // ══ STARTSCHERM ══
 function renderStartLijst() {
@@ -623,9 +625,16 @@ function initCanvas() {
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerUp);
+  
+  // TOUCH EVENTS voor pinch-to-zoom
+  wrapper.addEventListener('touchstart', onTouchStart, { passive: false });
+  wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
+  wrapper.addEventListener('touchend', onTouchEnd, { passive: false });
 }
 
 function onPointerDown(e) {
+  if (isPinching) return; // Niet tekenen tijdens pinch
+  
   e.preventDefault();
   isDrawing = true;
   
@@ -643,7 +652,7 @@ function onPointerDown(e) {
 }
 
 function onPointerMove(e) {
-  if (!isDrawing) return;
+  if (!isDrawing || isPinching) return;
   e.preventDefault();
   
   const rect = canvas.getBoundingClientRect();
@@ -722,29 +731,64 @@ function saveCanvas() {
   }
 }
 
-// Zoom functies - simpel
+// Zoom functies - canvas wordt groter
 function zoomIn() {
-  scale = Math.min(3, scale * 1.25);
-  canvas.style.transform = `scale(${scale})`;
-  canvas.style.transformOrigin = 'top left';
-  updateZoomDisplay();
+  scale = Math.min(4, scale * 1.25);
+  applyZoom();
 }
 
 function zoomOut() {
   scale = Math.max(0.5, scale / 1.25);
-  canvas.style.transform = `scale(${scale})`;
-  canvas.style.transformOrigin = 'top left';
-  updateZoomDisplay();
+  applyZoom();
 }
 
 function resetZoom() {
   scale = 1;
-  canvas.style.transform = 'scale(1)';
+  applyZoom();
+}
+
+function applyZoom() {
+  canvas.style.transform = `scale(${scale})`;
   updateZoomDisplay();
 }
 
 function updateZoomDisplay() {
   document.getElementById('zoom-display').textContent = Math.round(scale * 100) + '%';
+}
+
+// PINCH TO ZOOM
+function onTouchStart(e) {
+  if (e.touches.length === 2) {
+    e.preventDefault();
+    isPinching = true;
+    isDrawing = false;
+    initialPinchDistance = getPinchDistance(e.touches);
+    initialScale = scale;
+  }
+}
+
+function onTouchMove(e) {
+  if (isPinching && e.touches.length === 2) {
+    e.preventDefault();
+    
+    const currentDistance = getPinchDistance(e.touches);
+    const distanceRatio = currentDistance / initialPinchDistance;
+    
+    scale = Math.max(0.5, Math.min(4, initialScale * distanceRatio));
+    applyZoom();
+  }
+}
+
+function onTouchEnd(e) {
+  if (e.touches.length < 2) {
+    isPinching = false;
+  }
+}
+
+function getPinchDistance(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 // ══ PDF EXPORT ══
