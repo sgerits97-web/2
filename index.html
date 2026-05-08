@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-title" content="NTA 8800">
 <meta name="theme-color" content="#2c5f8a">
 <title>NTA 8800 Opname</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -138,16 +139,13 @@ select.f-input { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 #canvas-wrapper {
   flex: 1;
   position: relative;
-  overflow: auto;
+  overflow: hidden;
   background: #e8e8e8;
-  -webkit-overflow-scrolling: touch;
 }
 
-#canvas-main { 
-  display: block; 
-  background: white;
-  touch-action: none;
-  transform-origin: 0 0;
+.canvas-container {
+  width: 100%;
+  height: 100%;
 }
 
 /* ── LOADING OVERLAY ── */
@@ -315,6 +313,8 @@ select.f-input { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
     <!-- CANVAS PANEL -->
     <div class="canvas-panel">
       <div class="canvas-toolbar">
+        <button class="btn-icon" onclick="setDrawingMode()" title="Tekenen" id="btn-draw">✏️</button>
+        <button class="btn-icon" onclick="setPanMode()" title="Pan/Zoom" id="btn-pan">✋</button>
         <button class="btn-icon" onclick="clearCanvas()" title="Wissen">🗑</button>
         <button class="btn-icon" onclick="undoCanvas()" title="Ongedaan maken">↶</button>
         
@@ -328,7 +328,7 @@ select.f-input { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
         <div style="width: 1px; height: 24px; background: var(--border); margin: 0 4px;"></div>
         
         <div class="calc-container">
-          <span class="calc-label">Schaal</span>
+          <span class="calc-label">Zoom</span>
           <span class="calc-value" id="zoom-display">100%</span>
         </div>
         
@@ -370,17 +370,10 @@ let opnames = JSON.parse(localStorage.getItem('nta8800_opnames') || '[]');
 let huidigeOpname = null;
 let currentConsRow = null;
 
-// ══ CANVAS STATE ══
-let canvas, ctx, wrapper;
-let isDrawing = false;
+// ══ FABRIC.JS CANVAS STATE ══
+let fabricCanvas;
 let currentColor = '#000000';
-let drawingHistory = [];
-let historyStep = -1;
-let scale = 1;
-let lastX, lastY;
-let isPinching = false;
-let initialPinchDistance = 0;
-let initialScale = 1;
+let isDrawingMode = true;
 
 // ══ STARTSCHERM ══
 function renderStartLijst() {
@@ -431,7 +424,7 @@ function naarOpnamescherm() {
   document.getElementById('start-screen').style.display = 'none';
   document.getElementById('opname-screen').style.display = 'flex';
   laadFormulier();
-  setTimeout(initCanvas, 100); // Wacht tot layout klaar is
+  setTimeout(initCanvas, 100);
 }
 
 function naarStartscherm() {
@@ -579,106 +572,63 @@ function updatePV(idx, field, value) {
   saveCurrentOpname();
 }
 
-// ══ CANVAS - VOLLEDIG NIEUW SIMPEL SYSTEEM ══
+// ══ FABRIC.JS CANVAS - PROFESSIONEEL ══
 function initCanvas() {
-  canvas = document.getElementById('canvas-main');
-  wrapper = document.getElementById('canvas-wrapper');
-  ctx = canvas.getContext('2d');
+  const wrapper = document.getElementById('canvas-wrapper');
+  const canvas = document.getElementById('canvas-main');
   
-  const dpr = window.devicePixelRatio || 1;
-  const wrapperWidth = wrapper.clientWidth;
-  const wrapperHeight = wrapper.clientHeight;
+  // Zet canvas grootte
+  canvas.width = wrapper.clientWidth;
+  canvas.height = wrapper.clientHeight;
   
-  console.log('Wrapper size:', wrapperWidth, 'x', wrapperHeight);
+  // Initialiseer Fabric.js canvas
+  fabricCanvas = new fabric.Canvas('canvas-main', {
+    isDrawingMode: true,
+    backgroundColor: '#ffffff',
+    width: wrapper.clientWidth,
+    height: wrapper.clientHeight
+  });
   
-  // Canvas resolution
-  canvas.width = wrapperWidth * dpr;
-  canvas.height = wrapperHeight * dpr;
+  // Teken instellingen - Apple Pencil werkt automatisch!
+  fabricCanvas.freeDrawingBrush.color = currentColor;
+  fabricCanvas.freeDrawingBrush.width = 3;
   
-  // Canvas display size
-  canvas.style.width = wrapperWidth + 'px';
-  canvas.style.height = wrapperHeight + 'px';
-  
-  ctx.scale(dpr, dpr);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  
-  // Laad bestaande tekening of maak wit canvas
+  // Laad bestaande tekening
   if (huidigeOpname.canvasData) {
-    const img = new Image();
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0, wrapperWidth, wrapperHeight);
-      saveState();
-    };
-    img.src = huidigeOpname.canvasData;
-  } else {
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, wrapperWidth, wrapperHeight);
-    saveState();
+    try {
+      fabricCanvas.loadFromJSON(huidigeOpname.canvasData, () => {
+        fabricCanvas.renderAll();
+      });
+    } catch (e) {
+      console.log('Oude canvas data, nieuw canvas gemaakt');
+    }
   }
   
-  scale = 1;
+  // Auto-save bij wijzigingen
+  fabricCanvas.on('object:added', saveCanvas);
+  fabricCanvas.on('object:modified', saveCanvas);
+  fabricCanvas.on('object:removed', saveCanvas);
+  fabricCanvas.on('path:created', saveCanvas);
+  
   updateZoomDisplay();
-  
-  // POINTER EVENTS voor Apple Pencil
-  canvas.addEventListener('pointerdown', onPointerDown);
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerup', onPointerUp);
-  canvas.addEventListener('pointercancel', onPointerUp);
-  
-  // TOUCH EVENTS voor pinch-to-zoom
-  wrapper.addEventListener('touchstart', onTouchStart, { passive: false });
-  wrapper.addEventListener('touchmove', onTouchMove, { passive: false });
-  wrapper.addEventListener('touchend', onTouchEnd, { passive: false });
+  setDrawingMode();
 }
 
-function onPointerDown(e) {
-  if (isPinching) return; // Niet tekenen tijdens pinch
-  
-  e.preventDefault();
-  isDrawing = true;
-  
-  const rect = canvas.getBoundingClientRect();
-  lastX = (e.clientX - rect.left) / scale;
-  lastY = (e.clientY - rect.top) / scale;
-  
-  ctx.beginPath();
-  ctx.moveTo(lastX, lastY);
-  
-  // Apple Pencil pressure
-  const pressure = e.pressure > 0 ? e.pressure : 0.5;
-  ctx.lineWidth = 2 + (pressure * 4);
-  ctx.strokeStyle = currentColor;
+// Canvas modi
+function setDrawingMode() {
+  isDrawingMode = true;
+  fabricCanvas.isDrawingMode = true;
+  fabricCanvas.selection = false;
+  document.getElementById('btn-draw').style.background = 'var(--accent-light)';
+  document.getElementById('btn-pan').style.background = 'transparent';
 }
 
-function onPointerMove(e) {
-  if (!isDrawing || isPinching) return;
-  e.preventDefault();
-  
-  const rect = canvas.getBoundingClientRect();
-  const x = (e.clientX - rect.left) / scale;
-  const y = (e.clientY - rect.top) / scale;
-  
-  // Apple Pencil pressure
-  const pressure = e.pressure > 0 ? e.pressure : 0.5;
-  ctx.lineWidth = 2 + (pressure * 4);
-  
-  ctx.lineTo(x, y);
-  ctx.stroke();
-  
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  
-  lastX = x;
-  lastY = y;
-}
-
-function onPointerUp(e) {
-  if (!isDrawing) return;
-  e.preventDefault();
-  isDrawing = false;
-  saveState();
-  saveCanvas();
+function setPanMode() {
+  isDrawingMode = false;
+  fabricCanvas.isDrawingMode = false;
+  fabricCanvas.selection = true;
+  document.getElementById('btn-draw').style.background = 'transparent';
+  document.getElementById('btn-pan').style.background = 'var(--accent-light)';
 }
 
 // Canvas tools
@@ -686,109 +636,60 @@ function selectColor(btn) {
   document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   currentColor = btn.dataset.color;
+  fabricCanvas.freeDrawingBrush.color = currentColor;
 }
 
 function clearCanvas() {
   if (!confirm('Canvas wissen?')) return;
-  const w = canvas.width / (window.devicePixelRatio || 1);
-  const h = canvas.height / (window.devicePixelRatio || 1);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, w, h);
-  saveState();
+  fabricCanvas.clear();
+  fabricCanvas.backgroundColor = '#ffffff';
+  fabricCanvas.renderAll();
   saveCanvas();
 }
 
 function undoCanvas() {
-  if (historyStep > 0) {
-    historyStep--;
-    const img = new Image();
-    img.onload = () => {
-      const w = canvas.width / (window.devicePixelRatio || 1);
-      const h = canvas.height / (window.devicePixelRatio || 1);
-      ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(img, 0, 0, w, h);
-    };
-    img.src = drawingHistory[historyStep];
-  }
-}
-
-function saveState() {
-  historyStep++;
-  if (historyStep < drawingHistory.length) {
-    drawingHistory.length = historyStep;
-  }
-  drawingHistory.push(canvas.toDataURL());
-  if (drawingHistory.length > 50) {
-    drawingHistory.shift();
-    historyStep--;
+  const objects = fabricCanvas.getObjects();
+  if (objects.length > 0) {
+    fabricCanvas.remove(objects[objects.length - 1]);
+    fabricCanvas.renderAll();
   }
 }
 
 function saveCanvas() {
-  if (huidigeOpname) {
-    huidigeOpname.canvasData = canvas.toDataURL();
+  if (huidigeOpname && fabricCanvas) {
+    huidigeOpname.canvasData = JSON.stringify(fabricCanvas.toJSON());
     localStorage.setItem('nta8800_opnames', JSON.stringify(opnames));
   }
 }
 
-// Zoom functies - canvas wordt groter
+// Zoom functies - Fabric.js style
 function zoomIn() {
-  scale = Math.min(4, scale * 1.25);
-  applyZoom();
+  let zoom = fabricCanvas.getZoom();
+  zoom = Math.min(zoom * 1.1, 4);
+  fabricCanvas.setZoom(zoom);
+  updateZoomDisplay();
 }
 
 function zoomOut() {
-  scale = Math.max(0.5, scale / 1.25);
-  applyZoom();
+  let zoom = fabricCanvas.getZoom();
+  zoom = Math.max(zoom / 1.1, 0.5);
+  fabricCanvas.setZoom(zoom);
+  updateZoomDisplay();
 }
 
 function resetZoom() {
-  scale = 1;
-  applyZoom();
-}
-
-function applyZoom() {
-  canvas.style.transform = `scale(${scale})`;
+  fabricCanvas.setZoom(1);
+  fabricCanvas.viewportTransform[4] = 0;
+  fabricCanvas.viewportTransform[5] = 0;
+  fabricCanvas.renderAll();
   updateZoomDisplay();
 }
 
 function updateZoomDisplay() {
-  document.getElementById('zoom-display').textContent = Math.round(scale * 100) + '%';
-}
-
-// PINCH TO ZOOM
-function onTouchStart(e) {
-  if (e.touches.length === 2) {
-    e.preventDefault();
-    isPinching = true;
-    isDrawing = false;
-    initialPinchDistance = getPinchDistance(e.touches);
-    initialScale = scale;
+  if (fabricCanvas) {
+    const zoom = Math.round(fabricCanvas.getZoom() * 100);
+    document.getElementById('zoom-display').textContent = zoom + '%';
   }
-}
-
-function onTouchMove(e) {
-  if (isPinching && e.touches.length === 2) {
-    e.preventDefault();
-    
-    const currentDistance = getPinchDistance(e.touches);
-    const distanceRatio = currentDistance / initialPinchDistance;
-    
-    scale = Math.max(0.5, Math.min(4, initialScale * distanceRatio));
-    applyZoom();
-  }
-}
-
-function onTouchEnd(e) {
-  if (e.touches.length < 2) {
-    isPinching = false;
-  }
-}
-
-function getPinchDistance(touches) {
-  const dx = touches[0].clientX - touches[1].clientX;
-  const dy = touches[0].clientY - touches[1].clientY;
-  return Math.sqrt(dx * dx + dy * dy);
 }
 
 // ══ PDF EXPORT ══
@@ -969,7 +870,7 @@ async function exportPDF() {
     }
     
     // CANVAS TEKENING
-    if (op.canvasData) {
+    if (fabricCanvas) {
       doc.addPage();
       y = margin;
       
@@ -981,14 +882,20 @@ async function exportPDF() {
       y += 15;
       
       const imgWidth = contentWidth;
-      const imgHeight = (imgWidth / canvas.width) * canvas.height;
+      const canvasAspect = fabricCanvas.height / fabricCanvas.width;
+      const imgHeight = imgWidth * canvasAspect;
       
       if (y + imgHeight > pageHeight - margin) {
         doc.addPage();
         y = margin;
       }
       
-      doc.addImage(op.canvasData, 'PNG', margin, y, imgWidth, imgHeight);
+      const canvasImage = fabricCanvas.toDataURL({
+        format: 'png',
+        quality: 1
+      });
+      
+      doc.addImage(canvasImage, 'PNG', margin, y, imgWidth, imgHeight);
     }
     
     const filename = op.adres 
